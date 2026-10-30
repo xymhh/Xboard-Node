@@ -51,10 +51,58 @@
 
 ### 部署 / 回滚
 
-```sh
-# 构建（Go 1.26）
-go build -trimpath -ldflags "-s -w -X main.version=v1.13-xymhh.1" -o xboard-node ./cmd/xboard-node
+构建（Go 1.26）：
 
+```sh
+go build -trimpath -ldflags "-s -w -X main.version=v1.13-xymhh.1" -o xboard-node ./cmd/xboard-node
+```
+
+#### A. 用官方安装器装的节点（推荐，本 fork 目标机型）
+
+面板给出的安装命令是
+`curl -fsSL https://raw.githubusercontent.com/cedar2025/xboard-node/dev/install.sh | sudo bash -s -- --mode machine --panel ... --token ... --machine-id N`，
+安装器（`install.sh` 顶部常量）固定了这些路径：
+
+| 项 | 路径 |
+| --- | --- |
+| 二进制 | `/usr/local/bin/xboard-node` |
+| 配置 | `/etc/xboard-node/config.yml` |
+| 单元 | `/etc/systemd/system/xboard-node.service`（`ExecStart=/usr/local/bin/xboard-node -c /etc/xboard-node/config.yml`） |
+| 备份 | `/etc/xboard-node/backups/<YYYYmmdd-HHMMSS>/` |
+| CLI | `/usr/local/bin/xbctl` |
+
+用安装器自带的 `upgrade` 换二进制：自动备份 → 重启 → 健康检查，失败会自动回滚。
+
+```sh
+# 1) 现状（顺带确认安装器副本是否存在）
+sudo bash /etc/xboard-node/install.sh status
+
+# 2) 把新二进制放到 /tmp/xboard-node（scp 或本机 go build）
+# 2') 若上面提示 install.sh 不存在：当初是管道安装，脚本没落到本机，先取一份
+curl -fsSL https://raw.githubusercontent.com/cedar2025/xboard-node/dev/install.sh -o /tmp/install.sh
+
+# 3) 覆盖（--xbctl-binary 复用已装的 xbctl，避免联网下载失败中断升级）
+sudo bash /tmp/install.sh upgrade --binary /tmp/xboard-node --xbctl-binary /usr/local/bin/xbctl
+
+# 4) 验证
+systemctl show -p MainPID --value xboard-node      # 记下 PID
+journalctl -u xboard-node -n 30 --no-pager
+# 然后在面板改一次自定义出口：日志应出现 rebuilding kernel，且上面的 PID 不变
+
+# 5) 回滚（安装器每次升级前都把旧二进制存进 backups/）
+sudo install -m755 /etc/xboard-node/backups/<时间戳>/xboard-node /usr/local/bin/xboard-node
+sudo systemctl restart xboard-node
+```
+
+要点：
+
+- `upgrade` **不会**重渲染 `config.yml`（token / machine-id / kernel / health-port 全不动），只换二进制、`xbctl` 和 systemd 单元。
+- `--mode machine` 下一台机器一个二进制托管多个节点实例 → 每台机器只需换一次。
+- 多台机器先换一台灰度，验证日志 + PID 不变后再铺开。
+
+#### B. 手动控制（不用安装器）
+
+```sh
 # 替换（先备份原二进制）
 systemctl stop xboard-node
 install -m755 xboard-node /usr/local/bin/xboard-node   # 路径以你机器上 systemd 单元为准
