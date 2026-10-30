@@ -61,6 +61,13 @@ type SingBox struct {
 	// trackerRegistered prevents duplicate AppendTracker calls on the same
 	// Router instance during Reload. Reset to false on full restart.
 	trackerRegistered bool
+
+	// staticKey is the canonical JSON of the config sections that Reload cannot
+	// apply incrementally (outbounds / route / dns / experimental). Reload
+	// compares it against the running instance and rebuilds the box when it
+	// changed — otherwise panel edits to custom outbounds or custom routes keep
+	// running on the old outbound table / rules until the process restarts.
+	staticKey string
 }
 
 func New(cfg config.KernelConfig) *SingBox {
@@ -93,6 +100,12 @@ func (s *SingBox) Start(nodeConfig *model.NodeSpec, users []model.UserSpec, tls 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	return s.startLocked(nodeConfig, users, tls)
+}
+
+// startLocked builds and starts a fresh sing-box instance and adopts it.
+// Callers must hold s.mu. Any previous instance is recycled in the background.
+func (s *SingBox) startLocked(nodeConfig *model.NodeSpec, users []model.UserSpec, tls kernel.TLSCert) error {
 	cfgMap := buildConfig(s.cfg, nodeConfig, users, tls)
 	data, err := json.Marshal(cfgMap)
 	if err != nil {
@@ -138,6 +151,7 @@ func (s *SingBox) Start(nodeConfig *model.NodeSpec, users []model.UserSpec, tls 
 	s.users = users
 	s.nodeConfig = nodeConfig
 	s.tls = tls
+	s.staticKey = staticSectionsKey(cfgMap)
 
 	// Fresh tracker on full restart.
 	s.connTracker = NewConnTracker(0)
@@ -192,6 +206,10 @@ func recycleOldBox(oldBox *box.Box, oldCancel context.CancelFunc, oldCtx context
 // Reload hot-swaps the inbound users and routing rules without restarting the box.
 // Routes, outbounds, and the connTracker stay alive so in-flight connections
 // continue to be tracked correctly.
+//
+// Config sections that cannot be applied incrementally (the outbound table, DNS,
+// experimental) are detected via staticSectionsKey and applied by rebuilding the
+// whole box instead — see rebuildLocked.
 func (s *SingBox) Reload(nodeConfig *model.NodeSpec, users []model.UserSpec, tls kernel.TLSCert) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -201,6 +219,17 @@ func (s *SingBox) Reload(nodeConfig *model.NodeSpec, users []model.UserSpec, tls
 	}
 
 	cfgMap := buildConfig(s.cfg, nodeConfig, users, tls)
+
+	// The running box owns its outbound table and route rules; sing-box offers no
+	// way to replace an outbound in place. If any of those sections changed, the
+	// only correct way to apply them is a fresh box, otherwise the panel edit is
+	// silently ignored (upstream behaviour: "config updated" logged, old
+	// outbounds still serving traffic).
+	if key := staticSectionsKey(cfgMap); key != s.staticKey {
+		nlog.Core().Info("sing-box: static config changed (outbounds/routes/dns), rebuilding kernel")
+		return s.rebuildLocked(nodeConfig, users, tls)
+	}
+
 	data, err := json.Marshal(cfgMap)
 	if err != nil {
 		return fmt.Errorf("marshal config: %w", err)
@@ -221,12 +250,15 @@ func (s *SingBox) Reload(nodeConfig *model.NodeSpec, users []model.UserSpec, tls
 		return fmt.Errorf("router not available")
 	}
 
-	// Update routing rules
+	// Update routing rules. The route section is part of staticSectionsKey, so
+	// reaching this point means the rules are unchanged — a failure here means
+	// the running router rejects an otherwise identical config. Escalate to a
+	// rebuild instead of silently keeping the old rules in place.
 	if err := router.UpdateRules(opts.Route.Rules, opts.Route.RuleSet); err != nil {
-		nlog.Core().Debug("routing reload failed", "error", err)
-	} else {
-		nlog.Core().Debug("sing-box routing reloaded")
+		nlog.Core().Warn("routing reload failed, rebuilding kernel", "error", err)
+		return s.rebuildLocked(nodeConfig, users, tls)
 	}
+	nlog.Core().Debug("sing-box routing reloaded")
 
 	nopFactory := singLog.NewNOPFactory()
 
@@ -314,6 +346,69 @@ func (s *SingBox) Reload(nodeConfig *model.NodeSpec, users []model.UserSpec, tls
 	return nil
 }
 
+// staticSectionsKey renders the config sections that Reload cannot apply
+// incrementally into a canonical string, used to detect changes that require a
+// box rebuild:
+//
+//   - outbounds: the outbound table is built once per box, there is no in-place
+//     replacement API (panel "自定义出口" lives here)
+//   - route: rebuilt rules can reference outbounds that only exist after the
+//     rebuild, so rule changes are applied together with the outbound table
+//     (panel "自定义路由" lives here)
+//   - dns / experimental: only settable at box construction
+//
+// The sections are user-independent, so user add/remove/expiry changes do not
+// trigger a rebuild (those go through UpdateUsers/AddUsers/RemoveUsers).
+func staticSectionsKey(cfgMap M) string {
+	static := make(M, 4)
+	for _, key := range []string{"outbounds", "route", "dns", "experimental"} {
+		if v, ok := cfgMap[key]; ok {
+			static[key] = v
+		}
+	}
+	// encoding/json sorts map keys, so the output is deterministic.
+	data, err := json.Marshal(static)
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
+// rebuildLocked tears the running box down and starts a fresh one from scratch,
+// so config sections that Reload cannot hot-apply (outbounds, routes, dns,
+// experimental) actually take effect. Callers must hold s.mu.
+//
+// Semantics match `systemctl restart xboard-node` — established connections are
+// dropped — but without restarting the process: the WS client, reporting loop,
+// certificate manager and traffic bookkeeping survive.
+//
+// If the new config cannot be started, the last known-good config is restored so
+// a bad panel edit cannot take the node offline.
+func (s *SingBox) rebuildLocked(nodeConfig *model.NodeSpec, users []model.UserSpec, tls kernel.TLSCert) error {
+	prevConfig, prevUsers, prevTLS := s.nodeConfig, s.users, s.tls
+
+	// Close listen sockets and the old box without waiting for in-flight
+	// connections: they are about to be dropped anyway, and draining would keep
+	// the node offline for up to drainTimeout. Closing first is mandatory —
+	// sing-box listeners do not set SO_REUSEPORT, so a new box cannot bind while
+	// the old one still holds the ports.
+	s.stop(false)
+
+	if err := s.startLocked(nodeConfig, users, tls); err != nil {
+		if prevConfig == nil {
+			return fmt.Errorf("rebuild kernel: %w", err)
+		}
+		nlog.Core().Error("sing-box rebuild failed, restoring previous config", "error", err)
+		if rollbackErr := s.startLocked(prevConfig, prevUsers, prevTLS); rollbackErr != nil {
+			return fmt.Errorf("rebuild kernel: %w (rollback failed: %v)", err, rollbackErr)
+		}
+		return fmt.Errorf("rebuild kernel: %w (previous config restored)", err)
+	}
+
+	nlog.Core().Info("sing-box kernel rebuilt", "users", len(users))
+	return nil
+}
+
 // registerTracker wires the ConnTracker to the current Router exactly once.
 // The ConnTracker handles both byte counting and optional rate limiting
 // in a single wrapper, so no additional trackers are needed.
@@ -334,10 +429,13 @@ func (s *SingBox) registerTracker(ctx context.Context) {
 func (s *SingBox) Stop() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.stop()
+	s.stop(true)
 }
 
-func (s *SingBox) stop() {
+// stop closes the running box. When graceful is true it waits for in-flight
+// connections to drain (best effort) before hard-closing; rebuilds pass false
+// because those connections are dropped by the new box anyway.
+func (s *SingBox) stop(graceful bool) {
 	if s.box == nil {
 		return
 	}
@@ -351,7 +449,7 @@ func (s *SingBox) stop() {
 	}
 
 	// Step 2: wait for in-flight connections to drain naturally (best-effort).
-	if s.connTracker != nil {
+	if graceful && s.connTracker != nil {
 		deadline := time.Now().Add(drainTimeout)
 		for time.Now().Before(deadline) {
 			if s.connTracker.ActiveCount() == 0 {
