@@ -51,7 +51,19 @@
 
 ### 部署 / 回滚
 
-构建（Go 1.26）：
+#### 构建：用 GitHub Actions，不在本机编译
+
+fork 保留了上游 `.github/workflows/ci.yml`，改动三处（见下「CI 与上游的差异」）。**推 tag 即出二进制**：
+
+```sh
+git tag v1.13-xymhh.1 && git push origin v1.13-xymhh.1
+# 构建完成后（约 5 分钟）下载对应架构的二进制：
+curl -fL -o /tmp/xboard-node https://github.com/xymhh/Xboard-Node/releases/download/v1.13-xymhh.1/xboard-node-linux-amd64
+```
+
+Release 里的资产名与官方安装器一致：`xboard-node-linux-amd64` / `xboard-node-linux-arm64` / `xbctl-linux-*`。
+
+本地编译（仅离线或调试时用）：
 
 ```sh
 go build -trimpath -ldflags "-s -w -X main.version=v1.13-xymhh.1" -o xboard-node ./cmd/xboard-node
@@ -119,6 +131,14 @@ git remote add upstream https://github.com/cedar2025/Xboard-Node.git   # 已加
 git fetch upstream && git rebase upstream/dev
 ```
 改动集中在 `internal/kernel/singbox/singbox.go`（+新增测试文件），冲突面很小。
+
+### CI 与上游的差异（fork 专属，共 3 处）
+
+`.github/workflows/ci.yml` 只动了这几处，test / build / release 的构建逻辑与上游一致：
+
+1. 删除 `build-docker` job —— 它推 `ghcr.io/cedar2025/xboard-node`，fork 没有该命名空间写权限，每次必失败。
+2. `release` job 改为只在 **tag 推送**时触发（上游是 tag 或 `dev` 分支推送）—— 避免与仓库里已存在的 `dev` tag 撞名，也避免把 fork 的 dev 当滚动发布。
+3. 新增 `workflow_dispatch`（Actions 页可手动触发）；Go 版本 `1.25.7` → `1.26`，对齐 `go.mod` 的 `go 1.26`。
 
 ### 与上游的关系
 
