@@ -63,6 +63,13 @@ curl -fL -o /tmp/xboard-node https://github.com/xymhh/Xboard-Node/releases/downl
 
 Release 里的资产名与官方安装器一致：`xboard-node-linux-amd64` / `xboard-node-linux-arm64` / `xbctl-linux-*`。
 
+已发布并核验：`v1.13-xymhh.1`（2026-10-30），amd64 资产 66,977,954 B，`./xboard-node -v` 输出
+`xboard-node v1.13-xymhh.1 (built 2026-10-30T02:29:31Z)`，二进制内含 `static config changed (outbounds/routes/dns), rebuilding kernel` 等补丁字符串。
+
+> fork 的 Actions 在 GitHub 上默认未启用：新建 fork 后首次 push **不会**产生 run，需要
+> `PUT /repos/<owner>/<repo>/actions/permissions {"enabled":true}` 与
+> `PUT /repos/<owner>/<repo>/actions/workflows/ci.yml/enable`（或到 Actions 页面点一次 Enable）。
+
 本地编译（仅离线或调试时用）：
 
 ```sh
