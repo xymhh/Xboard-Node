@@ -39,26 +39,44 @@
 | 备份 | `/etc/xboard-node/backups/<时间戳>/` |
 | 命令行工具 | `/usr/local/bin/xbctl` |
 
-换成带修复的二进制：
+换成带修复的二进制——**一条命令**（自动取最新 Release，不用记版本号）：
 
 ```bash
-# 1) 下载本 fork 的二进制（按机器架构选 amd64 / arm64）
+curl -fsSL https://raw.githubusercontent.com/xymhh/Xboard-Node/dev/fork-upgrade.sh | sudo bash
+```
+
+`fork-upgrade.sh` 做的事：识别架构 → 下载最新 Release 的 `xboard-node-linux-<arch>` → 自检能否运行 →
+备份现有二进制到 `/etc/xboard-node/backups/manual/` → 替换 `/usr/local/bin/xboard-node` →
+重启 `xboard-node.service` → 健康检查（`/healthz`），起不来**自动回滚**。
+
+常用参数：
+
+```bash
+# 固定某个版本（不写就是 latest）
+curl -fsSL .../fork-upgrade.sh | sudo bash -s -- --tag v1.13-xymhh.2
+# 只下载 + 自检，不落盘、不重启
+curl -fsSL .../fork-upgrade.sh | sudo bash -s -- --dry-run
+# 回滚到最近一次备份
+curl -fsSL .../fork-upgrade.sh | sudo bash -s -- --rollback
+```
+
+不想跑脚本，手动两步也行：
+
+```bash
+# 1) 取二进制：latest 永远指向最新 Release；要锁版本就把 latest 换成 tag
 curl -fL -o /tmp/xboard-node \
-  https://github.com/xymhh/Xboard-Node/releases/download/v1.13-xymhh.1/xboard-node-linux-amd64
+  https://github.com/xymhh/Xboard-Node/releases/latest/download/xboard-node-linux-amd64
 
-# 2) 取安装器（若本机已有 /etc/xboard-node/install.sh，可直接用那份）
+# 2) 用官方安装器替换（自动备份 + 重启 + 健康检查，失败自动回滚）
 curl -fsSL https://raw.githubusercontent.com/cedar2025/xboard-node/dev/install.sh -o /tmp/install.sh
-
-# 3) 换二进制：自动备份 → 重启 → 健康检查（失败自动回滚）
 sudo bash /tmp/install.sh upgrade --binary /tmp/xboard-node --xbctl-binary /usr/local/bin/xbctl
 ```
 
 几点说明：
 
-- `upgrade` **不会**改 `config.yml`：token、machine-id、内核类型、端口全部保持不变。
+- 升级**不会**改 `config.yml`：token、machine-id、内核类型、端口全部保持不变。
 - `machine` 模式下，一台机器一个二进制托管多个节点实例，**每台机器只需换一次**。
 - 多台机器先换一台灰度，验证通过再铺开。
-- 装错架构或想退回：见下面「回滚」。
 
 ### 场景二：全新安装
 
@@ -97,10 +115,34 @@ journalctl -u xboard-node -f                     # 保持跟踪日志
 ### 回滚
 
 ```bash
-# 安装器每次升级前都会把旧二进制存进 backups/ 目录
-sudo install -m755 /etc/xboard-node/backups/<时间戳>/xboard-node /usr/local/bin/xboard-node
+# 方式一：脚本回滚（用最近一次自动备份）
+curl -fsSL https://raw.githubusercontent.com/xymhh/Xboard-Node/dev/fork-upgrade.sh | sudo bash -s -- --rollback
+
+# 方式二：手动指定备份（安装器和升级脚本的备份都在这两个目录）
+ls -t /etc/xboard-node/backups/manual/          # 升级脚本的备份
+ls -t /etc/xboard-node/backups/*/xboard-node    # 官方安装器的备份
+sudo install -m755 <选中的备份文件> /usr/local/bin/xboard-node
 sudo systemctl restart xboard-node
 ```
+
+## 后续更新
+
+**节点机**：以后每次更新都是同一条命令，不用改版本号：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/xymhh/Xboard-Node/dev/fork-upgrade.sh | sudo bash
+```
+
+**fork 出下一个版本**（上游有新提交，或本 fork 有改动时）：
+
+```bash
+git fetch upstream && git rebase upstream/dev && git push -f origin dev   # 同步上游
+git tag v1.14-xymhh.1 && git push origin refs/tags/v1.14-xymhh.1          # 打 tag → CI 自动出包
+```
+
+- tag 命名规则：`<上游版本>-xymhh.<fork 序号>`；上游发 `v1.14` 时本 fork 从 `v1.14-xymhh.1` 开始。
+- push tag 后约 5 分钟，`releases/latest/download/...` 就指向新版本，节点机再跑一次上面那条命令即可。
+- 想锁版本：`--tag v1.14-xymhh.1`；不锁就是 latest。
 
 ## 构建
 

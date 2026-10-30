@@ -58,10 +58,18 @@ fork 保留了上游 `.github/workflows/ci.yml`，改动三处（见下「CI 与
 ```sh
 git tag v1.13-xymhh.1 && git push origin v1.13-xymhh.1
 # 构建完成后（约 5 分钟）下载对应架构的二进制：
-curl -fL -o /tmp/xboard-node https://github.com/xymhh/Xboard-Node/releases/download/v1.13-xymhh.1/xboard-node-linux-amd64
+curl -fL -o /tmp/xboard-node https://github.com/xymhh/Xboard-Node/releases/latest/download/xboard-node-linux-amd64
 ```
 
 Release 里的资产名与官方安装器一致：`xboard-node-linux-amd64` / `xboard-node-linux-arm64` / `xbctl-linux-*`。
+
+节点机日常升级用仓库里的 `fork-upgrade.sh`（自动取最新 Release → 备份 → 替换 → 重启 → 健康检查，失败自动回滚）：
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/xymhh/Xboard-Node/dev/fork-upgrade.sh | sudo bash
+```
+
+版本号规则：`<上游版本>-xymhh.<fork 序号>`（上游发 v1.14 → 本 fork `v1.14-xymhh.1`）。
 
 已发布并核验：`v1.13-xymhh.1`（2026-10-30），amd64 资产 66,977,954 B，`./xboard-node -v` 输出
 `xboard-node v1.13-xymhh.1 (built 2026-10-30T02:29:31Z)`，二进制内含 `static config changed (outbounds/routes/dns), rebuilding kernel` 等补丁字符串。
