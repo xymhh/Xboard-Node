@@ -768,11 +768,17 @@ func (s *Service) ensureRunning() bool {
 // applyUserUpdate replaces the full user set and hot-swaps the kernel.
 // Called from WS sync.users and REST polling.
 func (s *Service) applyUserUpdate(ctx context.Context, users []model.UserSpec, newHash string) {
+	// Record the new user state before ensureRunning: a service that
+	// started with zero users has an empty lastUsers, and ensureRunning
+	// can only start the kernel when lastUsers is non-empty. Recording
+	// first lets the kernel start on the first poll that brings users.
+	// Previously the update was silently dropped here and the kernel
+	// never started, no matter how many polls returned users.
+	prevUsers, prevHash := s.prepareUserState(users)
 	if !s.ensureRunning() {
 		return
 	}
 
-	prevUsers, prevHash := s.prepareUserState(users)
 	added, removed, err := s.kernel.UpdateUsers(users)
 	if err != nil {
 		nlog.Core().Warn(fmt.Sprintf("UpdateUsers failed, restarting kernel: %v", err))
@@ -800,12 +806,17 @@ func (s *Service) applyUserDelta(ctx context.Context, action string, deltaUsers 
 		}
 		merged := mergeUsers(s.lastUsers, deltaUsers)
 
+		// Record the merged state first (same reason as applyUserUpdate):
+		// a service that started with zero users must remember the delta,
+		// otherwise ensureRunning below can never start the kernel and
+		// the delta is silently dropped forever.
+		prevUsers, prevHash := s.prepareUserState(merged)
 		if !s.ensureRunning() {
 			return
 		}
 
 		for _, delta := range deltaUsers {
-			for _, old := range s.lastUsers {
+			for _, old := range prevUsers {
 				if old.ID == delta.ID && old.UUID != delta.UUID {
 					s.kernel.RemoveUsers([]model.UserSpec{old})
 					break
@@ -813,7 +824,6 @@ func (s *Service) applyUserDelta(ctx context.Context, action string, deltaUsers 
 			}
 		}
 
-		prevUsers, prevHash := s.prepareUserState(merged)
 		added, err := s.kernel.AddUsers(deltaUsers)
 		if err != nil {
 			nlog.Core().Warn(fmt.Sprintf("AddUsers failed: %v, falling back to UpdateUsers", err))
@@ -835,6 +845,10 @@ func (s *Service) applyUserDelta(ctx context.Context, action string, deltaUsers 
 		filtered := subtractUsers(s.lastUsers, deltaUsers)
 
 		if !s.kernel.IsRunning() {
+			// Nothing to remove from a stopped kernel, but record the
+			// filtered state so a later start does not resurrect the
+			// removed users.
+			s.updateUserState(filtered)
 			return
 		}
 
