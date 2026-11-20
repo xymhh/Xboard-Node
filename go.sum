@@ -840,8 +840,8 @@ github.com/xdg/stringprep v0.0.0-20180714160509-73f8eece6fdc/go.mod h1:Jhud4/sHM
 github.com/xiang90/probing v0.0.0-20190116061207-43a291ad63a2/go.mod h1:UETIi67q53MR2AWcXfiuqkDkRtnGDLqkBTpCHuJHxtU=
 github.com/xtls/reality v0.0.0-20260322125925-9234c772ba8f h1:iy2JRioxmUpoJ3SzbFPyTxHZMbR/rSHP7dOOgYaq1O8=
 github.com/xtls/reality v0.0.0-20260322125925-9234c772ba8f/go.mod h1:DsJblcWDGt76+FVqBVwbwRhxyyNJsGV48gJLch0OOWI=
-github.com/xymhh/sing-box-1 v1.14.0-alpha.2.0.20261120030114-18f04db7a886 h1:wbxmJvmhOXGCirHblS55LGvNRhP2nBX82T6Vvel02Og=
-github.com/xymhh/sing-box-1 v1.14.0-alpha.2.0.20261120030114-18f04db7a886/go.mod h1:DTyWqWrjh/DqOHynCUgMhW8fgrkctleficRKwQmh668=
+github.com/xymhh/sing-box v1.14.0-alpha.2.0.20261120030114-18f04db7a886 h1:6hR6oo9Q5gTKzJgtfhPTFCbdDMM108FT0k4DLGe1b1g=
+github.com/xymhh/sing-box v1.14.0-alpha.2.0.20261120030114-18f04db7a886/go.mod h1:DTyWqWrjh/DqOHynCUgMhW8fgrkctleficRKwQmh668=
 github.com/yuin/goldmark v1.1.27/go.mod h1:3hX8gzYuyVAZsxl0MRgGTJEmQBFcNTphYh9decYSb74=
 github.com/yuin/goldmark v1.4.13/go.mod h1:6yULJ656Px+3vBD8DxQVa3kxgyrAnzto9xy5taEt/CY=
 github.com/yusufpapurcu/wmi v1.2.4 h1:zFUKzehAFReQwLys1b/iSMl+JQGSCSjtVqQn9bBrPo0=
